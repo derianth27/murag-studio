@@ -1,0 +1,12 @@
+{
+  "name": "MURAG Studio",
+  "short_name": "MURAG",
+  "description": "Studio penulisan cerita MURAG",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#a3262a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
