@@ -239,13 +239,16 @@ const SKEMA = {
   },
   misteri: {
     label: 'Misteri & Benang Merah', ikon: 'help', judul: 'judul', grup: 'status',
-    sub: (d) => d.munculPertama || '',
+    sub: (d) => [d.jenis === 'Detail kecil' ? 'detail kecil' : '', d.munculPertama].filter(Boolean).join(' · '),
     grupUrut: ['Terbuka', 'Petunjuk ditanam', 'Terjawab'],
     fields: [
       { k: 'judul', l: 'Misteri' },
       { k: 'status', l: 'Status', type: 'select', opt: ['Terbuka', 'Petunjuk ditanam', 'Terjawab'] },
+      { k: 'jenis', l: 'Jenis', type: 'select', opt: ['Benang utama', 'Detail kecil'], hint: 'detail kecil = hal aneh yang belum dijelaskan' },
       { k: 'munculPertama', l: 'Muncul pertama' },
-      { k: 'petunjukReboot', l: 'Petunjuk di cerita', hint: 'per bab reboot', type: 'area', wide: true },
+      { k: 'pertanyaan', l: 'Yang belum terjelaskan', hint: 'pertanyaan pembaca', type: 'area', wide: true },
+      { k: 'petunjukReboot', l: 'Petunjuk di cerita', hint: 'tulis per bab: "Bab N: ..." supaya masuk Rekap Misteri', type: 'area', wide: true },
+      { k: 'saran', l: 'Saran: itu apa?', hint: 'dugaan/usulan Claude, BUKAN kanon sampai dipindah ke Rencana', type: 'area', wide: true },
       { k: 'rencana', l: 'Rencana jawaban (rahasia penulis)', type: 'area', wide: true },
       { k: 'catatan', l: 'Catatan', type: 'area', wide: true },
       ...ARSIP_LAMA([{ k: 'petunjukLama', l: 'Petunjuk versi lama' }, { k: 'catatanLama', l: 'Catatan versi lama' }]),
@@ -423,6 +426,86 @@ function babBerjalan() {
   const list = babUrut('reboot').filter((b) => b.jenis !== 'ekstra');
   return list.find((b) => b.status === 'draf') || list.find((b) => b.status === 'rencana') || list[list.length - 1];
 }
+/* ---------------------------------------------------------------- Rekap misteri (per bab) */
+// "Bab 13–15" → [13,14,15]; "Bab 18 & 20" → [18,20]
+function babAngka(s) {
+  const out = new Set();
+  String(s || '').replace(/(\d+)\s*[–-]\s*(\d+)|(\d+)/g, (m, a, b, c) => {
+    if (c) out.add(+c);
+    else for (let i = +a; i <= +b && i - a < 60; i++) out.add(i);
+    return m;
+  });
+  return [...out];
+}
+// Pecah petunjukReboot jadi potongan {bab:[n...], teks}. Teks tanpa awalan "Bab N:" ikut bab munculPertama.
+const RE_KEPALA_BAB = /(^|[\s.;])(Bab\s+\d+(?:\s*(?:[–-]|&|,|dan)\s*\d+)*)(?:\s*\([^)]*\))?\s*:\s*/g;
+function potongPetunjuk(m) {
+  const t = String(m.petunjukReboot || '');
+  const heads = [...t.matchAll(RE_KEPALA_BAB)];
+  const out = [];
+  const awal = babAngka(String(m.munculPertama || '').split(/[,(]/)[0]).slice(0, 1);
+  const pre = (heads.length ? t.slice(0, heads[0].index + heads[0][1].length) : t).trim();
+  if (pre && awal.length) out.push({ bab: awal, teks: pre });
+  heads.forEach((h, i) => {
+    const mulai = h.index + h[0].length;
+    const akhir = i + 1 < heads.length ? heads[i + 1].index + heads[i + 1][1].length : t.length;
+    const teks = t.slice(mulai, akhir).trim();
+    if (teks) out.push({ bab: babAngka(h[2]), label: h[2].replace(/\s+/g, ' '), teks });
+  });
+  if (!out.length && awal.length) out.push({ bab: awal, teks: '(belum ada petunjuk tertulis)' });
+  return out;
+}
+// Misteri yang punya petunjuk di bab bernomor n
+function misteriDiBab(n) {
+  const res = [];
+  for (const m of DB.misteri) {
+    const pot = potongPetunjuk(m).filter((p) => p.bab.includes(n));
+    if (pot.length) res.push({ m, pot, baru: babAngka(String(m.munculPertama || '').split(/[,(]/)[0])[0] === n });
+  }
+  const urutStatus = { Terbuka: 0, 'Petunjuk ditanam': 1, Terjawab: 2 };
+  return res.sort((a, b) => (b.baru - a.baru) || ((urutStatus[a.m.status] ?? 1) - (urutStatus[b.m.status] ?? 1)));
+}
+const chipMisteri = (m) => `<span class="chip ${m.status === 'Terjawab' ? 'terjawab' : m.status === 'Terbuka' ? 'terbuka' : 'ditanam'}">${esc(m.status || '?')}</span>${m.jenis === 'Detail kecil' ? '<span class="chip ekstra">detail</span>' : ''}`;
+function kartuMisteri({ m, pot, baru }, opsi = {}) {
+  return `<details class="mem-item mis-item" ${opsi.buka ? 'open' : ''}>
+    <summary>${ico('help')} <span class="mis-judul">${esc(m.judul)}</span>${baru ? '<span class="chip rencana">baru</span>' : ''}<span class="k">${chipMisteri(m)}</span></summary>
+    <div class="mb-body"><dl style="margin:0">
+      ${pot.map((p) => `<dt>${esc(p.label || 'Di bab ini')}</dt><dd>${inline(p.teks)}</dd>`).join('')}
+      ${m.pertanyaan || m.catatan ? `<dt>Yang belum terjelaskan</dt><dd>${inline(m.pertanyaan || m.catatan)}</dd>` : ''}
+      ${m.saran ? `<dt class="saran-dt">💡 Saran: itu apa?</dt><dd class="saran">${inline(m.saran)}</dd>` : '<dt class="saran-dt">💡 Saran</dt><dd class="muted">Belum ada. Minta Claude: "isi saran misteri".</dd>'}
+      ${opsi.rencana && m.rencana ? `<dt>Rencana jawaban (rahasia)</dt><dd>${inline(m.rencana)}</dd>` : ''}
+    </dl><div style="margin-top:6px"><a href="#/k/misteri/${esc(m.id)}">buka di database →</a></div></div></details>`;
+}
+let rekapFilter = 'terbuka';
+let rekapRencana = false;
+function pageRekap() {
+  const babs = babUrut('reboot').filter((b) => b.jenis !== 'ekstra').reverse();
+  const saring = (list) => list.filter(({ m }) => rekapFilter === 'semua' || (rekapFilter === 'terbuka' ? m.status !== 'Terjawab' : m.jenis === 'Detail kecil'));
+  const tanpaSaran = DB.misteri.filter((m) => m.status !== 'Terjawab' && !m.saran).length;
+  const blok = babs.map((b) => {
+    const n = parseInt(b.nomor, 10);
+    const list = saring(misteriDiBab(n));
+    if (!list.length) return '';
+    return `<section class="card card-pad rekap-bab">
+      <div class="row mb"><h2><a href="#/bab/${esc(b.id)}">${esc(babLabel(b))}</a></h2><span class="spacer"></span>
+        <span class="small muted">${list.length} misteri · ${list.filter((x) => x.baru).length} baru</span></div>
+      ${list.map((x) => kartuMisteri(x, { buka: x.baru, rencana: rekapRencana })).join('')}
+    </section>`;
+  }).join('');
+  const btn = (k, l) => `<button class="btn small ${rekapFilter === k ? 'primary' : 'ghost'}" data-rf="${k}">${l}</button>`;
+  $('#main').innerHTML = `
+    <div class="page-head"><div class="grow"><h1 class="h-ico">${ico('help')} Rekap Misteri</h1>
+      <p>Semua misteri & hal yang belum terjelaskan, dikelompokkan per bab tempat petunjuknya muncul (dari isian <i>Petunjuk di cerita</i>: "Bab N: …").
+      <b>Saran</b> = dugaan Claude untuk lo, bukan kanon.</p></div>
+      <a class="btn" href="#/k/misteri">${ico('list')}Database misteri</a></div>
+    <div class="row mb rekap-tools">${btn('terbuka', 'Belum terjawab')}${btn('detail', 'Detail kecil')}${btn('semua', 'Semua')}
+      <span class="spacer"></span><label class="small"><input type="checkbox" id="rekapRencana" ${rekapRencana ? 'checked' : ''}> tampilkan rencana rahasia</label></div>
+    ${tanpaSaran ? `<div class="wattpad-note small mb">${tanpaSaran} misteri terbuka belum punya saran.</div>` : ''}
+    ${blok || '<div class="card empty-state">Belum ada misteri yang punya petunjuk per bab.</div>'}`;
+  $$('[data-rf]').forEach((x) => x.onclick = () => { rekapFilter = x.dataset.rf; pageRekap(); });
+  $('#rekapRencana').onchange = (e) => { rekapRencana = e.target.checked; pageRekap(); };
+}
+
 function buatBabBaru() {
   const reboot = DB.bab.filter((b) => b.versi === 'reboot' && b.jenis !== 'ekstra');
   const nomor = Math.max(0, ...reboot.map((b) => parseInt(b.nomor, 10) || 0)) + 1;
@@ -506,20 +589,21 @@ function renderNav(active) {
     '<div class="sec">Database</div>',
     ...['karakter', 'entitas', 'benda', 'latar', 'faksi', 'lore'].map((k) => link('#/k/' + k, SKEMA[k].ikon, SKEMA[k].label, c(k), k)),
     '<div class="sec">Ingatan penulis</div>',
+    link('#/rekap', 'layers', 'Rekap Misteri', undefined, 'rekap'),
     link('#/k/misteri', SKEMA.misteri.ikon, 'Misteri', terbuka, 'misteri'),
     link('#/k/ide', SKEMA.ide.ikon, 'Ide', c('ide'), 'ide'),
     link('#/checklist', 'check', 'Checklist', sisa, 'checklist'),
   ].join('');
 
   // Navigasi bawah HP: maksimal 5 tujuan; sisanya lewat "Lainnya" (laci menu)
-  const utama = ['beranda', 'bab', 'karakter', 'misteri'];
+  const utama = ['beranda', 'bab', 'karakter', 'rekap'];
   const tab = (href, icon, label, key) =>
     `<a href="${href}" class="${active === key ? 'active' : ''}"${active === key ? ' aria-current="page"' : ''}>${ico(icon)}<span>${label}</span></a>`;
   $('#bottomnav').innerHTML = [
     tab('#/beranda', 'home', 'Beranda', 'beranda'),
     tab('#/bab', 'book', 'Bab', 'bab'),
     tab('#/k/karakter', 'user', 'Karakter', 'karakter'),
-    tab('#/k/misteri', 'help', 'Misteri', 'misteri'),
+    tab('#/rekap', 'help', 'Misteri', 'rekap'),
     `<button type="button" id="moreBtn" class="${utama.includes(active) ? '' : 'active'}" aria-controls="sidebar" aria-expanded="false">${ico('more')}<span>Lainnya</span></button>`,
   ].join('');
   $('#moreBtn').onclick = () => setDrawer(true);
@@ -536,7 +620,7 @@ function setDrawer(open) {
   if (open) setTimeout(() => $('#menuClose')?.focus(), 50);
 }
 const TITLES = {
-  beranda: 'MURAG', bab: 'Bab & Tulis', info: 'Info Cerita', cari: 'Cari', checklist: 'Checklist',
+  beranda: 'MURAG', bab: 'Bab & Tulis', info: 'Info Cerita', cari: 'Cari', checklist: 'Checklist', rekap: 'Rekap Misteri',
 };
 
 function route(keepScroll) {
@@ -558,6 +642,7 @@ function route(keepScroll) {
   else if (p0 === 'cari') pageCari(p1 || '');
   else if (p0 === 'checklist') pageChecklist();
   else if (p0 === 'info') pageInfo();
+  else if (p0 === 'rekap') pageRekap();
   else { active = 'beranda'; pageBeranda(); }
   renderNav(active);
   window.scrollTo(0, keepScroll ? y : 0);
@@ -636,7 +721,8 @@ function pageBeranda() {
         </details>
       </div>
       <div>
-        <h2 class="mb">Misteri yang masih terbuka</h2>
+        <div class="row mb"><h2>Misteri yang masih terbuka</h2><span class="spacer"></span><a class="small" href="#/rekap">rekap per bab + saran →</a></div>
+        ${(() => { const r = babUrut('reboot').filter((b) => b.jenis !== 'ekstra' && b.status !== 'rencana').pop(); const l = r ? misteriDiBab(parseInt(r.nomor, 10)).filter((x) => x.m.status !== 'Terjawab') : []; return l.length ? `<div class="card card-pad mb"><div class="small muted mb">Disentuh di ${esc(babLabel(r))}</div>${l.map((x) => kartuMisteri(x)).join('')}</div>` : ''; })()}
         <div class="card">
           ${terbuka.map((x) => `<div class="todo"><span class="chip ${x.status === 'Terbuka' ? 'terbuka' : 'ditanam'}">${esc(x.status)}</span>
             <div><a href="#/k/misteri/${esc(x.id)}"><b>${esc(x.judul)}</b></a><div class="small muted">${esc(x.munculPertama || '')}</div></div></div>`).join('') || '<div class="empty-state">Semua misteri terjawab.</div>'}
@@ -841,11 +927,15 @@ function renderMemory(b) {
   const urut = babUrut(b.versi);
   const idx = urut.indexOf(b);
   const prev = urut.slice(0, idx).reverse().find((x) => x.jenis !== 'ekstra' && x.ringkasan);
-  const terbuka = DB.misteri.filter((m) => m.status !== 'Terjawab');
+  const diBab = isLama(b) ? [] : misteriDiBab(parseInt(b.nomor, 10));
+  const idDiBab = new Set(diBab.map((x) => x.m.id));
+  const terbuka = DB.misteri.filter((m) => m.status !== 'Terjawab' && !idDiBab.has(m.id));
   const kindLabel = { karakter: 'tokoh', entitas: 'entitas', benda: 'benda', latar: 'lokasi', faksi: 'faksi' };
   el.innerHTML = `
     <h3>${ico('layers')} Ingatan</h3>
     <p class="small muted">Otomatis dari nama/alias yang muncul di teks, arahan, ringkasan, tokoh & latar bab ini.</p>
+    ${diBab.length ? `<div class="msec"><div class="lbl">Misteri di bab ini (${diBab.length}) · <a href="#/rekap">rekap →</a></div>
+      ${diBab.map((x) => kartuMisteri(x, { rencana: true })).join('')}</div>` : ''}
     <div class="msec"><div class="lbl">Terdeteksi di bab ini (${found.length})</div>
       ${found.map(({ key, item, n }) => `<details class="mem-item"><summary>${ico(SKEMA[key].ikon)} ${esc(item[SKEMA[key].judul])}
         <span class="k">${kindLabel[key]} · ${n}×</span></summary><div class="mb-body">${memBody(key, item)}</div></details>`).join('') || '<div class="small muted">Belum ada nama yang dikenali.</div>'}
@@ -853,9 +943,10 @@ function renderMemory(b) {
     ${b.catatan ? `<div class="msec"><div class="lbl">Catatan bab ini</div><div class="small">${richText(b.catatan)}</div></div>` : ''}
     ${prev ? `<div class="msec"><div class="lbl">Sebelumnya: ${esc(babLabel(prev))}</div>
       <details class="mem-item"><summary>Ringkasan bab sebelumnya</summary><div class="mb-body">${richText(prev.ringkasan)}</div></details></div>` : ''}
-    <div class="msec"><div class="lbl">Misteri terbuka (${terbuka.length})</div>
+    <div class="msec"><div class="lbl">Misteri terbuka lainnya (${terbuka.length})</div>
       ${terbuka.map((m) => `<details class="mem-item"><summary>${ico('help')} ${esc(m.judul)}</summary><div class="mb-body">
         <dl style="margin:0"><dt>Petunjuk</dt><dd>${esc(m.petunjukReboot || '-')}</dd>
+        ${m.saran ? `<dt>💡 Saran: itu apa?</dt><dd>${esc(m.saran)}</dd>` : ''}
         ${m.rencana ? `<dt>Rencana jawaban</dt><dd>${esc(m.rencana)}</dd>` : ''}</dl>
         <div style="margin-top:6px"><a href="#/k/misteri/${esc(m.id)}">buka →</a></div></div></details>`).join('')}
     </div>
