@@ -553,10 +553,13 @@ function renderPreview(text) {
 function fizzoFormat(text) {
   const LIT = '\u0001';
   const html = [], plain = [];
+  // <b>/<i> + gaya inline: paling banyak dikenali editor (Android Html.fromHtml, editor web
+  // yang membuang <strong>/<em>, atau yang cuma membaca style).
+  const B = '<b style="font-weight:bold">', I = '<i style="font-style:italic">';
   const fmtHtml = (s) => esc(s.replace(/\\\*/g, LIT))
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/\u0001/g, '*');
+    .replace(/\*\*\*(.+?)\*\*\*/g, `${B}${I}$1</i></b>`)
+    .replace(/\*\*(.+?)\*\*/g, `${B}$1</b>`)
+    .replace(/\*(.+?)\*/g, `${I}$1</i>`).replace(/\u0001/g, '*');
   const fmtPlain = (s) => s.replace(/\\\*/g, LIT).replace(/\*{1,3}([^*\n]+?)\*{1,3}/g, '$1').replace(/\u0001/g, '*');
   for (let block of String(text || '').trim().split(/\n\s*\n/)) {
     block = block.trim();
@@ -570,7 +573,10 @@ function fizzoFormat(text) {
       plain.push(fmtPlain(line));
     }
   }
-  return { html: html.join(''), plain: plain.join('\n\n') };
+  return {
+    html: `<html><head><meta charset="utf-8"></head><body>${html.join('')}</body></html>`,
+    plain: plain.join('\n\n'),
+  };
 }
 async function copyRich(html, plain) {
   // Cara lama dulu, selagi masih di dalam klik: jalan juga di http biasa (HP lewat Wi-Fi)
