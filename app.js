@@ -42,6 +42,7 @@ const ICONS = {
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
   back: '<path d="M19 12H5m6-6-6 6 6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  org: '<rect x="9" y="3" width="6" height="4" rx="1"/><rect x="2.5" y="17" width="6" height="4" rx="1"/><rect x="9" y="17" width="6" height="4" rx="1"/><rect x="15.5" y="17" width="6" height="4" rx="1"/><path d="M12 7v5M5.5 17v-5h13v5M12 12v5"/>',
 };
 const ico = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
 function hydrateIcons(root = document) {
@@ -656,6 +657,7 @@ function renderNav(active) {
     link('#/beranda', 'home', 'Beranda', undefined, 'beranda'),
     link('#/bab', 'book', 'Bab & Tulis', DB.bab.filter((b) => !isLama(b)).length, 'bab'),
     link('#/info', 'compass', 'Info Cerita', undefined, 'info'),
+    ...((DB.meta.bagan || []).length ? [link('#/bagan', 'org', 'Bagan', DB.meta.bagan.length, 'bagan')] : []),
     '<div class="sec">Database</div>',
     ...['karakter', 'entitas', 'benda', 'latar', 'faksi', 'lore'].map((k) => link('#/k/' + k, SKEMA[k].ikon, SKEMA[k].label, c(k), k)),
     '<div class="sec">Ingatan penulis</div>',
@@ -690,7 +692,7 @@ function setDrawer(open) {
   if (open) setTimeout(() => $('#menuClose')?.focus(), 50);
 }
 const TITLES = {
-  beranda: 'MURAG', bab: 'Bab & Tulis', info: 'Info Cerita', cari: 'Cari', checklist: 'Checklist', rekap: 'Rekap Misteri',
+  beranda: 'MURAG', bab: 'Bab & Tulis', info: 'Info Cerita', cari: 'Cari', checklist: 'Checklist', rekap: 'Rekap Misteri', bagan: 'Bagan',
 };
 
 function route(keepScroll) {
@@ -713,6 +715,7 @@ function route(keepScroll) {
   else if (p0 === 'checklist') pageChecklist();
   else if (p0 === 'info') pageInfo();
   else if (p0 === 'rekap') pageRekap();
+  else if (p0 === 'bagan') pageBagan(p1);
   else { active = 'beranda'; pageBeranda(); }
   renderNav(active);
   window.scrollTo(0, keepScroll ? y : 0);
@@ -1187,6 +1190,42 @@ function cariHasil(q) {
   }
   $('#cariInfo').textContent = q.trim() ? `${res.length} hasil untuk “${q}”` : 'Cari di semua bab, database, dan info cerita.';
   $('#cariHasil').innerHTML = res.map((r) => `<a class="card result" href="${r.href}"><div class="kind">${esc(r.kind)}</div><h3>${esc(r.title)}</h3><div class="snip small">${r.snip}</div></a>`).join('');
+}
+
+/* ---------------------------------------------------------------- Bagan
+   Halaman HTML utuh (mis. Bagan Kodaltas) disimpan di data, meta.bagan, lewat tools/bagan_masuk.py.
+   Sengaja tidak ditaruh di static/ karena folder itu diunggah ke repo GitHub publik. */
+function pageBagan(id) {
+  const list = DB.meta.bagan || [];
+  const b = list.find((x) => x.id === id) || list[0];
+  if (!b) {
+    $('#main').innerHTML = `<div class="page-head"><div class="grow"><h1>Bagan</h1></div></div>
+      <div class="card empty-state">Belum ada bagan. Minta Claude: "masukkan bagan ke aplikasi".</div>`;
+    return;
+  }
+  $('#main').innerHTML = `
+    <div class="page-head"><div class="grow"><h1 class="h-ico">${ico('org')} ${esc(b.judul)}</h1>
+      <p class="small muted">Dari <code>${esc(b.sumber || '')}</code>${b.diperbarui ? ` · diperbarui ${esc(b.diperbarui)}` : ''}. Hanya baca; ubahnya lewat Claude.</p></div></div>
+    ${list.length > 1 ? `<div class="row mb">${list.map((x) => `<a class="btn small ${x === b ? 'primary' : 'ghost'}" href="#/bagan/${esc(x.id)}">${esc(x.judul)}</a>`).join('')}</div>` : ''}
+    <iframe id="baganFrame" class="bagan-frame" title="${esc(b.judul)}" sandbox="allow-same-origin" loading="eager"></iframe>`;
+  const fr = $('#baganFrame');
+  fr.style.cssText = 'width:100%;border:1px solid var(--line, #ccc);border-radius:8px;min-height:70vh;display:block;background:transparent';
+  const pas = () => {
+    try {
+      const d = fr.contentDocument;
+      const t = document.documentElement.dataset.theme;
+      if (t) d.documentElement.dataset.theme = t; else delete d.documentElement.dataset.theme;
+      // tanpa scrollbar di dalam iframe (lebarnya tetap), lalu ukur dari isi body (bukan dokumen)
+      // supaya tinggi iframe tidak ikut memanjang sendiri
+      d.documentElement.style.overflow = 'hidden';
+      const h = Math.ceil(d.body.getBoundingClientRect().height) + 8;
+      if (Math.abs(fr.offsetHeight - h) > 4) fr.style.height = h + 'px';
+    } catch (e) { /* biarkan tinggi bawaan */ }
+  };
+  fr.onload = () => { pas(); setTimeout(pas, 600); setTimeout(pas, 2000); }; // font Google dimuat belakangan
+  fr.srcdoc = b.html;
+  clearInterval(window._baganUkur);
+  window._baganUkur = setInterval(() => { if (!document.body.contains(fr)) clearInterval(window._baganUkur); else pas(); }, 1500);
 }
 
 /* ---------------------------------------------------------------- Checklist */
