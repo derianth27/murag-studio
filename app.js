@@ -31,6 +31,7 @@ const ICONS = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>',
   download: '<path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 17v3h16v-3"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   phone: '<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
   pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
@@ -547,6 +548,69 @@ function renderPreview(text) {
     return `<p>${inline(p)}</p>`;
   }).join('');
 }
+/* Format siap tempel ke editor Fizzo (sama dengan tools/fizzo_export.py):
+   tiap baris = satu paragraf, *** = pemisah adegan, "- " = butir, tebal/miring ikut. */
+function fizzoFormat(text) {
+  const LIT = '\u0001';
+  const html = [], plain = [];
+  const fmtHtml = (s) => esc(s.replace(/\\\*/g, LIT))
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/\u0001/g, '*');
+  const fmtPlain = (s) => s.replace(/\\\*/g, LIT).replace(/\*{1,3}([^*\n]+?)\*{1,3}/g, '$1').replace(/\u0001/g, '*');
+  for (let block of String(text || '').trim().split(/\n\s*\n/)) {
+    block = block.trim();
+    if (!block) continue;
+    if (/^(\*\*\*|\[(x|×)\])$/i.test(block)) { html.push('<p>***</p>'); plain.push('***'); continue; }
+    for (let line of block.split('\n')) {
+      line = line.trim();
+      if (!line) continue;
+      if (line.startsWith('- ')) line = '• ' + line.slice(2);
+      html.push(`<p>${fmtHtml(line)}</p>`);
+      plain.push(fmtPlain(line));
+    }
+  }
+  return { html: html.join(''), plain: plain.join('\n\n') };
+}
+async function copyRich(html, plain) {
+  // Cara lama dulu, selagi masih di dalam klik: jalan juga di http biasa (HP lewat Wi-Fi)
+  // dan di browser yang menolak izin clipboard. Dua format (html + teks polos) ikut.
+  if (copyViaSelection(html, plain)) return true;
+  try {
+    if (window.ClipboardItem && navigator.clipboard?.write) {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([plain], { type: 'text/plain' }),
+      })]);
+      return true;
+    }
+  } catch (e) { /* tidak diizinkan */ }
+  return false;
+}
+function copyViaSelection(html, plain) {
+  let ok = false;
+  const onCopy = (e) => {
+    e.clipboardData.setData('text/html', html);
+    e.clipboardData.setData('text/plain', plain);
+    e.preventDefault();
+    ok = true;
+  };
+  document.addEventListener('copy', onCopy);
+  try { if (!document.execCommand('copy')) ok = false; } catch (e) { ok = false; }
+  document.removeEventListener('copy', onCopy);
+  if (ok) return true;
+  // Cadangan terakhir: salin dari elemen tersembunyi
+  const div = document.createElement('div');
+  div.contentEditable = 'true';
+  div.style.cssText = 'position:fixed;left:-9999px;top:0;white-space:normal';
+  div.innerHTML = html;
+  document.body.appendChild(div);
+  const sel = getSelection(), r = document.createRange();
+  r.selectNodeContents(div); sel.removeAllRanges(); sel.addRange(r);
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  sel.removeAllRanges(); div.remove();
+  return ok;
+}
 function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function termsOf(item, skema) {
   const base = [item[skema.judul], item.namaLengkap, ...(String(item.alias || '').split(','))];
@@ -827,6 +891,7 @@ function pageBab(id) {
         <select data-f="status" aria-label="Status bab">${STATUS_BAB.map((s) => `<option ${s === b.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
         <span class="spacer only-mobile"></span>
         <button class="btn small" id="focusBtn" title="Mode fokus (Esc untuk keluar)">${ico('focus')}<span>Fokus</span></button>
+        <button class="btn small" id="fizzoBtn" title="Salin teks bab siap tempel ke editor Fizzo (tebal/miring ikut)">${ico('copy')}<span>Salin untuk Fizzo</span></button>
         <button class="btn small" id="exportBtn" title="Ekspor teks bab ke .txt">${ico('download')}<span>.txt</span></button>
         <button class="btn small danger" id="delBab" title="Hapus bab" aria-label="Hapus bab">${ico('trash')}</button>
       </div>
@@ -901,6 +966,25 @@ function pageBab(id) {
   }));
   $('#main [data-f="status"]').addEventListener('change', () => pageBab(id));
   $('#focusBtn').onclick = () => { if (babTab !== 'tulis') { babTab = 'tulis'; pageBab(id); } document.body.classList.add('focus'); $('#editor')?.focus(); };
+  $('#fizzoBtn').onclick = async () => {
+    const btn = $('#fizzoBtn'), lbl = btn.querySelector('span');
+    const w = countWords(b.isi);
+    if (!w) { alert('Bab ini belum ada teksnya.'); return; }
+    if (w < 1000 && !confirm(`Bab ini baru ${fmtNum(w)} kata. Fizzo menghitung update harian minimal 1.000 kata. Tetap salin?`)) return;
+    const { html, plain } = fizzoFormat(b.isi);
+    const ok = await copyRich(html, plain);
+    if (!ok) { alert('Gagal menyalin otomatis. Pakai tombol .txt lalu salin manual.'); return; }
+    // Di HP labelnya tersembunyi, jadi ikon ikut berubah jadi centang
+    lbl.textContent = `Tersalin (${fmtNum(w)} kata)`;
+    btn.querySelector('svg')?.replaceWith(document.createRange().createContextualFragment(ico('check')));
+    btn.classList.add('primary');
+    clearTimeout(btn._t);
+    btn._t = setTimeout(() => {
+      lbl.textContent = 'Salin untuk Fizzo';
+      btn.querySelector('svg')?.replaceWith(document.createRange().createContextualFragment(ico('copy')));
+      btn.classList.remove('primary');
+    }, 2500);
+  };
   $('#exportBtn').onclick = () => download(`${babLabel(b).replace(/[\\/:*?"<>|]/g, '')}.txt`, `${babLabel(b)}\n\n${b.isi || ''}`, 'text/plain');
   $('#delBab').onclick = () => {
     if (!confirm(`Hapus "${babLabel(b)}"? Tindakan ini tidak bisa dibatalkan (tapi cadangan otomatis tetap ada di folder data/backups).`)) return;
